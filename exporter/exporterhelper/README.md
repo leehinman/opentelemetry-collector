@@ -97,6 +97,20 @@ To use the persistent queue, the following setting needs to be set:
 - `sending_queue`
   - `storage` (default = none): When set, enables persistence and uses the component specified as a storage extension for the persistent queue.
     There is no in-memory queue when set.
+  - `drain_timeout` (default = 0): When positive, on shutdown the exporter keeps sending data from the persistent queue
+    until the queue is empty or this duration passes, whichever comes first. Only valid when `storage` is set. When 0,
+    exporting stops on shutdown and the remaining data stays in storage for the next start.
+
+Draining is best effort. Retries are disabled during shutdown, so each request is sent once. A request that fails with
+a retryable error stays in storage and stops the drain; a request that fails with a permanent error is dropped and the
+drain continues. Exporters are shut down one at a time, so shutdown can take up to the sum of all exporters'
+`drain_timeout` values. Set the orchestrator's grace period (for example, Kubernetes `terminationGracePeriodSeconds`)
+higher than that sum.
+
+A configuration reload also shuts down the exporters, so it drains too, and the reload can be delayed by up to
+`drain_timeout`. This happens even though the reloaded exporter would pick up the remaining data from storage. The
+exception is a reload where only receivers changed and the `service.partialReload` feature gate is enabled, because
+the exporters keep running.
 
 The maximum number of batches stored to disk can be controlled using `sending_queue.queue_size` parameter (which,
 similarly as for in-memory buffering, defaults to 1000 batches).

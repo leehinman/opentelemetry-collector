@@ -39,6 +39,10 @@ exported_configs:
         go_struct:
           type: go.opentelemetry.io/collector/config/configstorage.ID
           field_name: StorageID
+      drain_timeout:
+        type: duration
+        description: If positive, keeps the persistent queue exporting on shutdown until it is empty or the timeout passes.
+        minimum: 0
       num_consumers:
         type: int
         description: |

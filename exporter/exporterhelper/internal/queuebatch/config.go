@@ -32,6 +32,10 @@ func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
 // validateConfig implements Config validation that cannot
 // be expressed with config schema rules
 func validateConfig(cfg *Config) error {
+	if cfg.DrainTimeout > 0 && !cfg.StorageID.HasValue() {
+		return errors.New("`drain_timeout` is only supported with a persistent queue configured with `storage`")
+	}
+
 	// Only support request sizer for persistent queue at this moment.
 	if cfg.StorageID.HasValue() && cfg.WaitForResult {
 		return errors.New("`wait_for_result` is not supported with a persistent queue configured with `storage`")

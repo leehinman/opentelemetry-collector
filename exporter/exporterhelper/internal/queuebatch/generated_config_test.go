@@ -36,6 +36,13 @@ func TestConfigValidate_ExclusiveMinimumQueueSize(t *testing.T) {
 	require.ErrorContains(t, cfg.Validate(), "queue_size value must be greater than 0")
 }
 
+func TestConfigValidate_MinimumDrainTimeout(t *testing.T) {
+	cfg := Config{}
+	cfg.DrainTimeout = 0 - 1
+
+	require.ErrorContains(t, cfg.Validate(), "drain_timeout value must be greater than or equal to 0")
+}
+
 func TestConfigValidate_ExclusiveMinimumNumConsumers(t *testing.T) {
 	cfg := Config{}
 	cfg.NumConsumers = 0

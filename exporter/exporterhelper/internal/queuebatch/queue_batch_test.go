@@ -234,6 +234,42 @@ func TestQueueBatchPersistentEnabled_NoDataLossOnShutdown(t *testing.T) {
 	require.NoError(t, qb.Shutdown(context.Background()))
 }
 
+func TestQueueBatchPersistentEnabled_DrainOnShutdown(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.NumConsumers = 1
+	cfg.Batch = configoptional.Optional[BatchConfig]{}
+	cfg.DrainTimeout = 5 * time.Second
+	storageID := component.MustNewIDWithName("file_storage", "storage")
+	cfg.StorageID = configoptional.Some(configstorage.ID(storageID))
+
+	qSet := newFakeRequestSettings()
+	qSet.Encoding = newFakeEncoding(&requesttest.FakeRequest{Items: 2})
+
+	sink := requesttest.NewSink()
+	picked := make(chan struct{}, 5)
+	release := make(chan struct{})
+	qb, err := NewQueueBatch(qSet, cfg, func(ctx context.Context, req request.Request) error {
+		picked <- struct{}{}
+		<-release
+		return sink.Export(ctx, req)
+	})
+	require.NoError(t, err)
+	require.NoError(t, qb.Start(context.Background(), hosttest.NewHost(map[component.ID]component.Component{
+		storageID: storagetest.NewMockStorageExtension(nil),
+	})))
+
+	for range 5 {
+		require.NoError(t, qb.Send(context.Background(), &requesttest.FakeRequest{Items: 2}))
+	}
+	<-picked
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+
+	require.NoError(t, qb.Shutdown(context.Background()))
+	assert.Equal(t, 5, sink.RequestsCount())
+	assert.Equal(t, 10, sink.ItemsCount())
+	require.Zero(t, qb.queue.Size())
+}
+
 func TestQueueBatchNoStartShutdown(t *testing.T) {
 	qs, err := NewQueueBatch(newFakeRequestSettings(), newTestConfig(), sendertest.NewNopSenderFunc[request.Request]())
 	require.NoError(t, err)

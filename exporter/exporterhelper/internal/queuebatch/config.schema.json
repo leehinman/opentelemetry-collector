@@ -119,6 +119,12 @@
           "type": "boolean",
           "description": "Determines the behavior when the component's TotalSize limit is reached.\nIf true, the component will wait for space; otherwise, operations will immediately return a retryable error.\n"
         },
+        "drain_timeout": {
+          "type": "string",
+          "description": "If positive, keeps the persistent queue exporting on shutdown until it is empty or the timeout passes.",
+          "minimum": 0,
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+        },
         "num_consumers": {
           "type": "integer",
           "description": "Is the maximum number of concurrent consumers from the queue.\nThis applies across all different optional configurations from above \n(e.g. wait_for_result, block_on_overflow, storage, etc.).\n",

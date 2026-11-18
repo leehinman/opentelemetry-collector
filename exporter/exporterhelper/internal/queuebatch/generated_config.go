@@ -90,6 +90,9 @@ type Config struct {
 	// as a storage extension for the persistent queue.
 	StorageID configoptional.Optional[configstorage.ID] `mapstructure:"storage,omitempty"`
 
+	// DrainTimeout if positive, keeps the persistent queue exporting on shutdown until it is empty or the timeout passes.
+	DrainTimeout time.Duration `mapstructure:"drain_timeout,omitempty"`
+
 	// NumConsumers is the maximum number of concurrent consumers from the queue.
 	// This applies across all different optional configurations from above
 	// (e.g. wait_for_result, block_on_overflow, storage, etc.).
@@ -113,6 +116,10 @@ func (c *Config) Validate() error {
 
 	if c.QueueSize <= 0 {
 		err = errors.Join(err, errors.New("queue_size value must be greater than 0"))
+	}
+
+	if c.DrainTimeout < 0 {
+		err = errors.Join(err, errors.New("drain_timeout value must be greater than or equal to 0"))
 	}
 
 	if c.NumConsumers <= 0 {

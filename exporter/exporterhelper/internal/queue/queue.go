@@ -6,6 +6,7 @@ package queue // import "go.opentelemetry.io/collector/exporter/exporterhelper/i
 import (
 	"context"
 	"errors"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configoptional"
@@ -77,6 +78,7 @@ type Settings[T request.Request] struct {
 	BlockOnOverflow  bool
 	Signal           pipeline.Signal
 	StorageID        configoptional.Optional[configstorage.ID]
+	DrainTimeout     time.Duration
 	ReferenceCounter ReferenceCounter[T]
 	Encoding         Encoding[T]
 	ID               component.ID

@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configstorage"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/experr"
 	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/request"
 	"go.opentelemetry.io/collector/extension/xextension/storage"
@@ -85,11 +87,15 @@ type persistentQueue[T request.Request] struct {
 	mu              sync.Mutex
 	hasMoreElements *sync.Cond
 	hasMoreSpace    *cond
+	drainCond       *cond
 	metadata        PersistentMetadata
 	refClient       int64
 	stopped         bool
+	draining        bool
+	drainAborted    bool
 
 	blockOnOverflow bool
+	drainTimeout    time.Duration
 }
 
 // newPersistentQueue creates a new queue backed by file storage; name and signal must be a unique combination that identifies the queue storage
@@ -105,10 +111,12 @@ func newPersistentQueue[T request.Request](set Settings[T]) readableQueue[T] {
 		storageID:       *set.StorageID.Get(),
 		id:              set.ID,
 		signal:          set.Signal,
+		drainTimeout:    set.DrainTimeout,
 		blockOnOverflow: set.BlockOnOverflow,
 	}
 	pq.hasMoreElements = sync.NewCond(&pq.mu)
 	pq.hasMoreSpace = newCond(&pq.mu)
+	pq.drainCond = newCond(&pq.mu)
 	return pq
 }
 
@@ -249,10 +257,26 @@ func (pq *persistentQueue[T]) Shutdown(ctx context.Context) error {
 
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
+	if pq.drainTimeout > 0 {
+		pq.drain(ctx)
+	}
 	// Mark this queue as stopped, so consumer don't start any more work.
 	pq.stopped = true
 	pq.hasMoreElements.Broadcast()
 	return pq.unrefClient(ctx)
+}
+
+func (pq *persistentQueue[T]) drain(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, pq.drainTimeout)
+	defer cancel()
+	pq.draining = true
+	pq.logger.Info("Draining persistent queue", zap.Int64("size", pq.internalSize()), zap.Duration("drain_timeout", pq.drainTimeout))
+	for !pq.drainAborted && (pq.metadata.ReadIndex != pq.metadata.WriteIndex || pq.refClient > 1) {
+		if pq.drainCond.Wait(ctx) != nil {
+			pq.logger.Warn("Persistent queue not drained, remaining items kept in storage", zap.Int64("size", pq.internalSize()))
+			return
+		}
+	}
 }
 
 // unrefClient unrefs the client, and closes if no more references. Callers MUST hold the mutex.
@@ -344,6 +368,7 @@ func (pq *persistentQueue[T]) Read(ctx context.Context) (context.Context, T, Don
 			pq.hasMoreSpace.Signal()
 		}
 
+		pq.drainCond.Signal()
 		// TODO: Need to change the Queue interface to return an error to allow distinguish between shutdown and context canceled.
 		//  Until then use the sync.Cond.
 		pq.hasMoreElements.Wait()
@@ -398,8 +423,13 @@ func (pq *persistentQueue[T]) onDone(index uint64, itemsSize, bytesSize int64, c
 		if err := pq.unrefClient(context.Background()); err != nil {
 			pq.logger.Error("Error closing the storage client", zap.Error(err))
 		}
+		pq.drainCond.Signal()
 		pq.mu.Unlock()
 	}()
+
+	if pq.draining && consumeErr != nil && !consumererror.IsPermanent(consumeErr) {
+		pq.drainAborted = true
+	}
 
 	if experr.IsShutdownErr(consumeErr) {
 		// The queue is shutting down, don't mark the item as dispatched, so it's picked up again after restart.

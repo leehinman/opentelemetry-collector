@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configoptional"
 	"go.opentelemetry.io/collector/config/configstorage"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/experr"
 	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/hosttest"
 	"go.opentelemetry.io/collector/exporter/exporterhelper/internal/request"
@@ -886,6 +887,117 @@ func TestPersistentQueue_ShutdownWhileConsuming(t *testing.T) {
 	assert.False(t, ps.client.(*storagetest.MockStorageClient).IsClosed())
 	done.OnDone(nil)
 	assert.True(t, ps.client.(*storagetest.MockStorageClient).IsClosed())
+}
+
+func startDrainQueue(t *testing.T, ext storage.Extension, drainTimeout time.Duration, consume ConsumeFunc[intRequest]) Queue[intRequest] {
+	set := newSettingsWithStorage(request.SizerTypeRequests, 1000)
+	set.DrainTimeout = drainTimeout
+	aq := newAsyncQueue(newPersistentQueue[intRequest](set), 1, consume)
+	require.NoError(t, aq.Start(context.Background(), hosttest.NewHost(map[component.ID]component.Component{{}: ext})))
+	for range 10 {
+		require.NoError(t, aq.Offer(context.Background(), intRequest(1)))
+	}
+	return aq
+}
+
+func remainingInStorage(t *testing.T, ext storage.Extension) int64 {
+	pq := createTestPersistentQueue(t, ext, request.SizerTypeRequests, 1000)
+	defer func() { require.NoError(t, pq.Shutdown(context.Background())) }()
+	return pq.Size()
+}
+
+func TestPersistentQueue_DrainTimeout(t *testing.T) {
+	permanentOnce := &atomic.Bool{}
+	tests := []struct {
+		name         string
+		drainTimeout time.Duration
+		shutdownCtx  time.Duration
+		consumeErr   func() error
+		release      time.Duration
+		wantConsumed int64
+		wantLeft     int64
+	}{
+		{name: "disabled", release: 50 * time.Millisecond, wantConsumed: 1, wantLeft: 9},
+		{name: "drains", drainTimeout: 5 * time.Second, release: 50 * time.Millisecond, wantConsumed: 10, wantLeft: 0},
+		{name: "timeout", drainTimeout: 50 * time.Millisecond, release: 300 * time.Millisecond, wantConsumed: 1, wantLeft: 9},
+		{name: "ctx_deadline", drainTimeout: 10 * time.Second, shutdownCtx: 50 * time.Millisecond, release: 300 * time.Millisecond, wantConsumed: 1, wantLeft: 9},
+		{
+			name: "permanent_error_continues", drainTimeout: 5 * time.Second, release: 50 * time.Millisecond, wantConsumed: 10, wantLeft: 0,
+			consumeErr: func() error {
+				if permanentOnce.CompareAndSwap(false, true) {
+					return consumererror.NewPermanent(errors.New("bad data"))
+				}
+				return nil
+			},
+		},
+		{
+			name: "retryable_error_aborts", drainTimeout: 5 * time.Second, release: 50 * time.Millisecond, wantLeft: 10,
+			consumeErr: func() error { return experr.NewShutdownErr(errors.New("backend down")) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ext := storagetest.NewMockStorageExtension(nil)
+			release := make(chan struct{})
+			picked := make(chan struct{}, 10)
+			consumed := &atomic.Int64{}
+			aq := startDrainQueue(t, ext, tt.drainTimeout, func(_ context.Context, _ intRequest, done Done) {
+				picked <- struct{}{}
+				<-release
+				consumed.Add(1)
+				var err error
+				if tt.consumeErr != nil {
+					err = tt.consumeErr()
+				}
+				done.OnDone(err)
+			})
+			<-picked
+			time.AfterFunc(tt.release, func() { close(release) })
+
+			ctx := context.Background()
+			if tt.shutdownCtx > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.shutdownCtx)
+				defer cancel()
+			}
+			start := time.Now()
+			require.NoError(t, aq.Shutdown(ctx))
+			assert.Less(t, time.Since(start), time.Second)
+			if tt.wantConsumed > 0 {
+				assert.Equal(t, tt.wantConsumed, consumed.Load())
+			}
+			assert.Equal(t, tt.wantLeft, remainingInStorage(t, ext))
+		})
+	}
+}
+
+func TestPersistentQueue_DrainKeepsClientOpen(t *testing.T) {
+	set := newSettingsWithStorage(request.SizerTypeRequests, 1000)
+	set.DrainTimeout = 5 * time.Second
+	pq := newPersistentQueue[intRequest](set).(*persistentQueue[intRequest])
+	require.NoError(t, pq.Start(context.Background(), hosttest.NewHost(map[component.ID]component.Component{{}: storagetest.NewMockStorageExtension(nil)})))
+	client := pq.client.(*storagetest.MockStorageClient)
+	require.NoError(t, pq.Offer(context.Background(), intRequest(1)))
+	require.NoError(t, pq.Offer(context.Background(), intRequest(1)))
+
+	_, _, done, ok := pq.Read(context.Background())
+	require.True(t, ok)
+	shutdownErr := make(chan error, 1)
+	go func() { shutdownErr <- pq.Shutdown(context.Background()) }()
+	require.Eventually(t, func() bool {
+		pq.mu.Lock()
+		defer pq.mu.Unlock()
+		return pq.draining
+	}, time.Second, time.Millisecond)
+
+	done.OnDone(nil)
+	assert.False(t, client.IsClosed())
+	_, _, done, ok = pq.Read(context.Background())
+	require.True(t, ok)
+	done.OnDone(nil)
+
+	require.NoError(t, <-shutdownErr)
+	assert.True(t, client.IsClosed())
 }
 
 func TestPersistentQueue_StorageFull(t *testing.T) {

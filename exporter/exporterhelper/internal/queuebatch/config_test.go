@@ -30,6 +30,17 @@ func TestConfig_Validate(t *testing.T) {
 	require.EqualError(t, confmap.Validate(cfg), "`wait_for_result` is not supported with a persistent queue configured with `storage`")
 
 	cfg = newTestConfig()
+	cfg.DrainTimeout = -time.Second
+	require.EqualError(t, confmap.Validate(cfg), "drain_timeout value must be greater than or equal to 0")
+
+	cfg = newTestConfig()
+	cfg.DrainTimeout = time.Second
+	require.EqualError(t, confmap.Validate(cfg), "`drain_timeout` is only supported with a persistent queue configured with `storage`")
+
+	cfg.StorageID = configoptional.Some(storageID)
+	require.NoError(t, confmap.Validate(cfg))
+
+	cfg = newTestConfig()
 	cfg.QueueSize = cfg.Batch.Get().MinSize - 1
 	require.EqualError(t, confmap.Validate(cfg), "`min_size` must be less than or equal to `queue_size`")
 

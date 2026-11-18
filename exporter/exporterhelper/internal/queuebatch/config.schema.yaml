@@ -51,6 +51,11 @@ $defs:
       block_on_overflow:
         description: BlockOnOverflow determines the behavior when the component's TotalSize limit is reached. If true, the component will wait for space; otherwise, operations will immediately return a retryable error.
         type: boolean
+      drain_timeout:
+        description: DrainTimeout, if positive, keeps the persistent queue exporting on shutdown until it is empty or the timeout passes.
+        type: string
+        x-customType: time.Duration
+        format: duration
       enabled:
         description: Enabled indicates whether to not enqueue and batch before exporting.
         type: boolean

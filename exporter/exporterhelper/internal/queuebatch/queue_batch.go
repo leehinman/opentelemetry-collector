@@ -67,6 +67,7 @@ func NewQueueBatch(
 		BlockOnOverflow:  cfg.BlockOnOverflow,
 		Signal:           set.Signal,
 		StorageID:        cfg.StorageID,
+		DrainTimeout:     cfg.DrainTimeout,
 		ReferenceCounter: set.ReferenceCounter,
 		Encoding:         set.Encoding,
 		ID:               set.ID,
